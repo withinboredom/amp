@@ -2,6 +2,7 @@
 
 namespace Amp
 {
+
     use React\Promise\PromiseInterface as ReactPromise;
 
     /**
@@ -145,6 +146,7 @@ namespace Amp
 
 namespace Amp\Promise
 {
+
     use Amp\Deferred;
     use Amp\Loop;
     use Amp\MultiReasonException;
@@ -576,6 +578,7 @@ namespace Amp\Promise
 
 namespace Amp\Iterator
 {
+
     use Amp\Delayed;
     use Amp\Emitter;
     use Amp\Iterator;
@@ -797,6 +800,7 @@ namespace Amp\Iterator
 
 namespace Amp\Stream
 {
+
     use Amp\AsyncGenerator;
     use Amp\Delayed;
     use Amp\Iterator;
@@ -1031,5 +1035,21 @@ namespace Amp\Stream
                 yield $yield($iterator->getCurrent());
             }
         });
+    }
+
+    /**
+     * Creates a new pipeline from the given stream.
+     *
+     * @template TValue
+     *
+     * @param Stream $stream
+     *
+     * @psalm-param Stream<TValue> $stream
+     *
+     * @return Pipeline
+     */
+    function pipe(Stream $stream): SerialPipeline
+    {
+        return SerialPipeline::fromStream($stream);
     }
 }
