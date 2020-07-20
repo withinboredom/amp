@@ -4,6 +4,8 @@ namespace Amp\Stream;
 
 use Amp\Promise;
 use Amp\Stream;
+use Amp\StreamSource;
+use function Amp\asyncCall;
 use function Amp\call;
 use function Amp\delay;
 use function Amp\Internal\createTypeError;
@@ -32,13 +34,17 @@ abstract class Pipeline implements Stream
         });
     }
 
-    public function take(int $count): Pipeline
+    public function limit(int $count): Pipeline
     {
         $elements = 0;
 
-        return $this->apply(static function ($value, callable $emit) use (&$elements, $count) {
+        return $this->apply(static function ($value, callable $emit, callable $stop) use (&$elements, $count) {
             if (++$elements <= $count) {
                 yield $emit($value);
+
+                if ($elements === $count) {
+                    $stop();
+                }
             }
         });
     }
@@ -60,6 +66,115 @@ abstract class Pipeline implements Stream
             yield delay($delayInMilliseconds);
             yield $emit($value);
         });
+    }
+
+    public function flat(): Pipeline
+    {
+        return $this->apply(static function ($value, callable $emit) {
+            if (!$value instanceof Stream) {
+                throw createTypeError([Stream::class], $value);
+            }
+
+            while (null !== $innerValue = yield $value->continue()) {
+                yield $emit($innerValue);
+            }
+        });
+    }
+
+    public function mergeSorted(callable $comparator): SerialPipeline
+    {
+        $source = new StreamSource;
+
+        asyncCall(function () use ($comparator, $source) {
+            try {
+                $streams = yield $this->toArray();
+
+                if (!$streams) {
+                    $source->complete();
+
+                    return;
+                }
+
+                $promises = [];
+                foreach ($streams as $stream) {
+                    $promises[] = $stream->continue();
+                }
+
+                $values = yield $promises;
+
+                $sortedKeys = [];
+                $sortedValues = [];
+                $sortedCount = 0;
+
+                foreach ($values as $key => $value) {
+                    if ($value === null) {
+                        unset($values[$key]);
+
+                        continue;
+                    }
+
+                    if ($sortedCount === 0) {
+                        $sortedValues = [$value];
+                        $sortedKeys = [$key];
+                        $sortedCount = 1;
+
+                        continue;
+                    }
+
+                    $insertIndex = 0;
+
+                    foreach ($sortedValues as $index => $sortedValue) {
+                        $compare = yield call($comparator, $value, $sortedValue);
+                        if ($compare <= 0) {
+                            \array_splice($sortedValues, $insertIndex, 0, [$value]);
+                            \array_splice($sortedKeys, $insertIndex, 0, [$key]);
+                            $sortedCount++;
+                            continue 2;
+                        }
+
+                        $insertIndex++;
+                    }
+
+                    \array_splice($sortedValues, $insertIndex, 0, [$value]);
+                    \array_splice($sortedKeys, $insertIndex, 0, [$key]);
+                    $sortedCount++;
+                }
+
+                while ($sortedCount > 0) {
+                    $minKey = $sortedKeys[0];
+
+                    yield $source->emit($sortedValues[0]);
+
+                    unset($sortedValues[0], $sortedKeys[0]);
+
+                    $newValue = yield $streams[$minKey]->continue();
+                    if ($newValue !== null) {
+                        $insertIndex = 0;
+                        foreach ($sortedValues as $sortedValue) {
+                            $compare = yield call($comparator, $newValue, $sortedValue);
+                            if ($compare <= 0) {
+                                \array_splice($sortedValues, $insertIndex, 0, [$newValue]);
+                                \array_splice($sortedKeys, $insertIndex, 0, [$minKey]);
+                                continue 2;
+                            }
+
+                            $insertIndex++;
+                        }
+
+                        \array_splice($sortedValues, $insertIndex, 0, [$newValue]);
+                        \array_splice($sortedKeys, $insertIndex, 0, [$minKey]);
+                    } else {
+                        $sortedCount--;
+                    }
+                }
+
+                $source->complete();
+            } catch (\Throwable $e) {
+                $source->fail($e);
+            }
+        });
+
+        return SerialPipeline::fromStream($source->stream());
     }
 
     public function forEach(callable $operator): Promise

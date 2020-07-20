@@ -32,19 +32,30 @@ final class ConcurrentUnorderedPipeline extends Pipeline
         $source = new StreamSource;
         $pipeline = new self($source->stream(), $this->concurrency);
 
-        for ($i = 0; $i < $this->concurrency; $i++) {
-            asyncCall(function () use ($operator, $source) {
-                try {
-                    while (null !== $value = yield $this->continue()) {
-                        yield call($operator, $value, \Closure::fromCallable([$source, 'emit']));
-                    }
+        $stopped = false;
+        $stop = static function () use (&$stopped) {
+            $stopped = true;
+        };
 
-                    $source->complete();
-                } catch (\Throwable $e) {
-                    $source->fail($e);
+        $promises = [];
+
+        for ($i = 0; $i < $this->concurrency; $i++) {
+            $promises[] = call(function () use ($operator, $source, &$stopped, $stop) {
+                while (!$stopped && null !== $value = yield $this->continue()) {
+                    yield call($operator, $value, \Closure::fromCallable([$source, 'emit']), $stop);
                 }
             });
         }
+
+        asyncCall(static function () use ($promises, $source) {
+            try {
+                yield $promises;
+
+                $source->complete();
+            } catch (\Throwable $e) {
+                $source->fail($e);
+            }
+        });
 
         return $pipeline;
     }

@@ -33,10 +33,17 @@ final class SerialPipeline extends Pipeline
         $pipeline->preserveOrder = $this->preserveOrder;
 
         asyncCall(function () use ($operator, $source) {
+            $stopped = false;
+            $stop = static function () use (&$stopped) {
+                $stopped = true;
+            };
+
             try {
-                while (null !== $value = yield $this->continue()) {
-                    yield call($operator, $value, \Closure::fromCallable([$source, 'emit']));
+                while (!$stopped && null !== $value = yield $this->continue()) {
+                    yield call($operator, $value, \Closure::fromCallable([$source, 'emit']), $stop);
                 }
+
+                $this->stream->dispose();
 
                 $source->complete();
             } catch (\Throwable $e) {
